@@ -1,20 +1,21 @@
-﻿
-using Microsoft.Extensions.Configuration;
+﻿using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using System.Text.RegularExpressions;
 using VagasExtraction.Config;
+using VagasExtraction.Services;
 
-public class Program
-{
-    private static void Main(string[] args)
-    {
-        var collection = new ServiceCollection();
-        IConfiguration config = new ConfigurationBuilder()
-                .AddJsonFile("appsettings.json")
-                .AddEnvironmentVariables()
-                .Build();
+HostApplicationBuilder builder = Host.CreateApplicationBuilder(args);
 
-        collection.AddServicesInjection(config);
-        //IServiceProvider = collection.BuildServiceProvider();
-    }
+var directory = Regex.Replace(Directory.GetCurrentDirectory(), @"\\bin.+", "");
+var config = new ConfigurationBuilder()
+        .SetBasePath(directory)
+        .AddJsonFile("appsettings.json", optional: true)
+        .Build();
 
-}
+builder.Services.AddServicesInjection(config);
+builder.Services.AddHostedService<ExtractionService>();
+
+using IHost host = builder.Build();
+
+await host.RunAsync();
