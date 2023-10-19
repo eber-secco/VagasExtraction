@@ -1,5 +1,4 @@
-﻿
-namespace VagasExtraction.Enums;
+﻿namespace VagasExtraction.Enums;
 
 public enum TypesSearchEnum
 {
