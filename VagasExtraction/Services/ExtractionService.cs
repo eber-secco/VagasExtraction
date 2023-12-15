@@ -18,10 +18,13 @@ public class ExtractionService : IHostedService
 {
     private int vacanciesLimit = 6000;
     private int suffixesLimit = 6000;
+    private int maxParallel = 4;
 
     private DriverHelper driverHelper;
-    private List<Vacancy> vacancies = new List<Vacancy>();
-    private List<string> classificationsBNE = new List<string>
+    private object lockGetDriver = new();
+    private List<string> listKey = new();
+    private List<Vacancy> vacancies = new();
+    private List<string> classificationsBNE = new()
     {
         "via BNE",
         "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQIdYlIeHTbxbX2lTyqAy2MoX9PknCNqfgie9H5&s=0",
@@ -246,10 +249,8 @@ public class ExtractionService : IHostedService
             var parallelOptions = new ParallelOptions()
             {
                 //Para testar use 1
-                //MaxDegreeOfParallelism = 1,
-                MaxDegreeOfParallelism = 4,
+                MaxDegreeOfParallelism = maxParallel,
             };
-
             var driverOptions = new Selenium.DriverOptions();
 #if DEBUG
             driverOptions = new Selenium.DriverOptions(headLess: false, disableGPU: true);
@@ -266,7 +267,7 @@ public class ExtractionService : IHostedService
                 var suffixFormated = Tool.RemoveSpecialChars(Regex.Replace((string)suffix.Suffix.Trim(), @"\s{1,}", "+")).ToLower();
 
                 await Task.Delay(new Random().Next(1, 8) * 1000);
-                var driver = driverHelper.GetDriver(suffix.Suffix, driverOptions);
+                var (key, driver) = GetDriver(driverOptions);
                 await Task.Delay(1000);
 
                 try
@@ -290,7 +291,7 @@ public class ExtractionService : IHostedService
                         }
 
                         driver.Navigate().GoToUrl($"https://www.google.com.br/search?q=vagas+de+emprego+{suffixFormated}");
-                        await Task.Delay(2500);
+                        await Task.Delay(3500);
 
                         if (triesCaptha <= 0)
                             break;
@@ -300,8 +301,8 @@ public class ExtractionService : IHostedService
                         else
                         {
                             triesCaptha--;
-                            driver = driverHelper.RestartDriver(suffix.Suffix, driverOptions);
-                            Console.WriteLine($"Restart ({triesCaptha}) {suffix.Suffix}");
+                            driver = driverHelper.RestartDriver(key, driverOptions);
+                            Console.WriteLine($"Restart ({key}) ({triesCaptha}) {suffix.Suffix}");
                         }
                     }
                     
@@ -317,7 +318,7 @@ public class ExtractionService : IHostedService
                         while (true)
                         {
                             await Task.Delay(2500);
-                            if (!driver.Url.Contains("sorry/index?continue"))
+                            if (timer.Elapsed.TotalMinutes >= 10 || !driver.Url.Contains("sorry/index?continue"))
                                 break;
                         }
 #else
@@ -325,10 +326,16 @@ public class ExtractionService : IHostedService
 #endif
                     }
 
+                    await Task.Delay(2500);
                     driver.FindElement(By.XPath("//div[@class='nJXhWc']//g-link/a")).Click();
                     await Task.Delay(2500);
-                    driver.FindElement(By.XPath("//div[@class='TRwkpf GbaVB yjYmLb']")).Click();
-                    await Task.Delay(2500);
+
+                    try
+                    {
+                        driver.FindElement(By.XPath("//div[@class='TRwkpf GbaVB yjYmLb']")).Click();
+                        await Task.Delay(2500);
+                    }
+                    catch { }
 
                     var vacancyNodeCollection = await GetVacancyNodeCollectionAsync(driver);
 
@@ -337,7 +344,7 @@ public class ExtractionService : IHostedService
 
                     for (var i = 0; i < vacancyNodeCollection.Count; i++)
                     {
-                        if (timer.Elapsed.TotalMinutes == 10 || vacancies.Count >= vacanciesLimit || count >= limit)
+                        if (timer.Elapsed.TotalMinutes >= 10 || vacancies.Count >= vacanciesLimit || count >= limit)
                             break;
 
                         var isClassificated = ClassificationVacancy(vacancyNodeCollection[i]);
@@ -381,17 +388,16 @@ public class ExtractionService : IHostedService
                 {
                     await Console.Out.WriteLineAsync($"Deu problema no sufixo {suffix}\n{ex.Message}");
                 }
-
-                if (driver != null)
-                    driverHelper.FreeDriver(suffix.Suffix);
             });
         }
         catch (Exception ex)
         {
             Console.WriteLine($"Deu problema no serviço de extração\n{ex.Message}");
         }
-
-        driverHelper.Dispose();
+        finally
+        {
+            driverHelper.Dispose();
+        }
     }
 
 
@@ -511,7 +517,6 @@ public class ExtractionService : IHostedService
         //Obter classificação by Via 'Empresa'
         classifications.Add(html.DocumentNode.SelectSingleNode("//div[@class='Qk80Jf'][2]").InnerText);
 
-
         //Obter classificação by img (src)
         var img = html.DocumentNode.SelectSingleNode("//img");
         if (img != null)
@@ -525,5 +530,30 @@ public class ExtractionService : IHostedService
         }
 
         return isClassificated;
+    }
+
+    private (string key, ChromeDriver? chromeDriver) GetDriver(VagasExtraction.Selenium.DriverOptions driverOptions)
+    {
+        string key = string.Empty;
+        ChromeDriver? driver = null;
+
+        lock (lockGetDriver)
+        {
+            if (listKey.Count < maxParallel)
+            {
+                key = Guid.NewGuid().ToString();
+                listKey.Add(key);
+            }
+            else
+            {
+                key = listKey.First();
+                listKey.Remove(key);
+                listKey.Add(key);
+            }
+
+            driver = driverHelper.GetDriver(key, driverOptions);
+        }
+
+        return (key, driver);
     }
 }
